@@ -1,27 +1,26 @@
+import json
+import logging
+import subprocess
+import urllib.request
 from pathlib import Path
 
 import click
 import click_completion
 import click_completion.core
-import json
-import subprocess
-import urllib.request
+import pathspec
 from pkg_resources import get_distribution
 
 from claudesync.cli.chat import chat
-from claudesync.configmanager import FileConfigManager, InMemoryConfigManager
+from claudesync.configmanager import InMemoryConfigManager
+from claudesync.configmanager.file_config_manager import FileConfigManager
 from claudesync.syncmanager import SyncManager
-from claudesync.utils import (
-    handle_errors,
-    validate_and_get_provider,
-    get_local_files,
-)
+from claudesync.utils import get_local_files, handle_errors, validate_and_get_provider
+
 from .auth import auth
+from .config import config
 from .organization import organization
 from .project import project
 from .sync import schedule
-from .config import config
-import logging
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -35,7 +34,8 @@ click_completion.init()
 def cli(ctx):
     """ClaudeSync: Synchronize local files with AI projects."""
     if ctx.obj is None:
-        ctx.obj = FileConfigManager()  # InMemoryConfigManager() for testing with mock
+        ctx.obj = FileConfigManager()
+        # ctx.obj = InMemoryConfigManager()
 
 
 @cli.command()
@@ -107,14 +107,29 @@ def upgrade(ctx):
 
 
 @cli.command()
+@click.argument("patterns", nargs=-1)
 @click.option("--category", help="Specify the file category to sync")
 @click.option(
     "--uberproject", is_flag=True, help="Include submodules in the parent project sync"
 )
 @click.pass_obj
 @handle_errors
-def push(config, category, uberproject):
-    """Synchronize the project files, optionally including submodules in the parent project."""
+def push(config, patterns, category, uberproject):
+    """
+    Synchronize project files, optionally filtered by patterns.
+
+    If patterns are provided, only files matching those patterns will be synced.
+    Patterns support wildcards (*, ?) and can include directory paths.
+
+    Examples:
+        claudesync push  # Sync all files
+        claudesync push src/*.py  # Sync all Python files in src directory
+        claudesync push file1.txt file2.txt  # Sync specific files
+        claudesync push src/models/*.ts src/views/*.tsx  # Sync multiple patterns
+    """
+    click.echo(f"{patterns=}")
+    patterns = pathspec.PathSpec(patterns)
+
     provider = validate_and_get_provider(config, require_project=True)
 
     if not category:
@@ -157,30 +172,33 @@ def push(config, category, uberproject):
         sync_manager = SyncManager(provider, config, config.get_local_path())
         remote_files = provider.list_files(active_organization_id, active_project_id)
 
-        if uberproject:
+        local_files = get_local_files(
+            config,
+            local_path,
+            category,
             # Include submodule files in the parent project
-            local_files = get_local_files(
-                config, local_path, category, include_submodules=True
-            )
-        else:
             # Exclude submodule files from the parent project
-            local_files = get_local_files(
-                config, local_path, category, include_submodules=False
-            )
+            include_submodules=uberproject,
+            pattern_spec=patterns,
+        )
 
         sync_manager.sync(local_files, remote_files)
         click.echo(
             f"Main project '{active_project_name}' synced successfully: https://claude.ai/project/{active_project_id}"
         )
 
-        # Always sync submodules to their respective projects
-        for submodule in submodules:
-            sync_submodule(provider, config, submodule, category)
+        # Always sync submodules to their respective projects unless specific patterns were provided
+        # TODO: dont know if this makes sense
+        if not patterns:
+            for submodule in submodules:
+                sync_submodule(provider, config, submodule, category)
 
 
-def sync_submodule(provider, config, submodule, category):
+def sync_submodule(provider, config, submodule, category, pattern_spec=None):
     submodule_path = Path(config.get_local_path()) / submodule["relative_path"]
-    submodule_files = get_local_files(config, str(submodule_path), category)
+    submodule_files = get_local_files(
+        config, str(submodule_path), category, pattern_spec=pattern_spec
+    )
     remote_submodule_files = provider.list_files(
         submodule["active_organization_id"], submodule["active_project_id"]
     )

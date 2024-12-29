@@ -1,11 +1,11 @@
-import os
 import hashlib
+import logging
+import os
 from functools import wraps
 from pathlib import Path
 
 import click
 import pathspec
-import logging
 
 from claudesync.exceptions import ConfigurationError, ProviderError
 from claudesync.provider_factory import get_provider
@@ -166,7 +166,13 @@ def process_file(file_path):
     return None
 
 
-def get_local_files(config, local_path, category=None, include_submodules=False):
+def get_local_files(
+    config,
+    local_path,
+    category=None,
+    include_submodules=False,
+    pattern_spec: pathspec.PathSpec = None,
+):
     """
     Retrieves a dictionary of local files within a specified path, applying various filters.
 
@@ -175,6 +181,7 @@ def get_local_files(config, local_path, category=None, include_submodules=False)
         local_path (str): The base directory path to search for files.
         category (str, optional): The file category to filter by.
         include_submodules (bool, optional): Whether to include files from submodules.
+        pattern_spec (PathSpec, optional): PathSpec object for filtering files by pattern.
 
     Returns:
         dict: A dictionary where keys are relative file paths, and values are MD5 hashes of the file contents.
@@ -201,7 +208,7 @@ def get_local_files(config, local_path, category=None, include_submodules=False)
     if category:
         patterns = categories[category]["patterns"]
 
-    spec = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+    category_spec = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
 
     submodules = config.get("submodules", [])
     submodule_paths = [sm["relative_path"] for sm in submodules]
@@ -230,8 +237,12 @@ def get_local_files(config, local_path, category=None, include_submodules=False)
             rel_path = os.path.join(rel_root, filename)
             full_path = os.path.join(root, filename)
 
-            if spec.match_file(rel_path) and should_process_file(
-                config, full_path, filename, gitignore, local_path, claudeignore
+            if (
+                category_spec.match_file(rel_path)
+                and (pattern_spec is None or pattern_spec.match_file(rel_path))
+                and should_process_file(
+                    config, full_path, filename, gitignore, local_path, claudeignore
+                )
             ):
                 file_hash = process_file(full_path)
                 if file_hash:
